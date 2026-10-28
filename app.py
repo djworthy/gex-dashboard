@@ -1,4 +1,5 @@
 """Gamma exposure dashboard. Run locally with:  streamlit run app.py"""
+import time
 from datetime import datetime
 
 import numpy as np
@@ -70,8 +71,28 @@ with st.sidebar:
         help="Use this if the automatic futures price fails to load.",
     )
     chart_range = st.slider("Chart range around spot (%)", 1, 15, 4)
+    st.divider()
+    auto = st.toggle("Auto-refresh", value=False, help="Reloads fresh data on a timer while the page is open.")
+    every = st.radio("Every", ["1 min", "2 min", "5 min"], index=1, horizontal=True, disabled=not auto)
+    st.caption(f"Last updated {datetime.now(gex.ET):%I:%M:%S %p} ET")
 
 cfg = PRODUCTS[product]
+
+# ---------------------------------------------------------------- auto-refresh
+st.session_state["last_run"] = time.time()
+interval = {"1 min": 60, "2 min": 120, "5 min": 300}[every] if auto else None
+
+
+@st.fragment(run_every=interval)
+def auto_refresher():
+    # Runs quietly on the timer; once enough time has passed, pull fresh data and redraw the whole page.
+    if interval and time.time() - st.session_state.get("last_run", 0) >= interval - 2:
+        load_chain.clear()
+        load_future.clear()
+        st.rerun()
+
+
+auto_refresher()
 
 # ---------------------------------------------------------------- data
 try:
@@ -98,6 +119,11 @@ def to_fut(x):
 
 
 df = gex.prepare(raw, WINDOWS[window])
+next_session = WINDOWS[window] == 0 and not df.empty and df["expiry"].min() > datetime.now(gex.ET).date()
+if next_session:
+    st.info(f"Today's 0DTE options have expired, so this shows the next session's expiry "
+            f"({df['expiry'].min():%a %m/%d}). Volume is light until it opens, so open-interest weighting "
+            "(sidebar) is usually more meaningful right now.")
 if df.empty:
     st.info(f"No live options in the {window} window right now (markets closed or no expiry today). Pick a longer window.")
     st.stop()
@@ -282,7 +308,7 @@ def num(x):
 
 gcol = "gex_vol" if weight == "volume" else "gex_oi"
 max_abs = table[gcol].abs().max() or 1
-lv = [f"ASOF,{cfg['chain'].strip('_')} {window} · {stamp}", f"TAG,{window} ({datetime.now(gex.ET):%m/%d})"]
+lv = [f"ASOF,{cfg['chain'].strip('_')} {window} · {stamp}", f"TAG,{window} ({df['expiry'].min():%m/%d})"]
 if flip_main is not None:
     lv.append(f"HVL,{num(conv(flip_main))}")
 for i, (_, r) in enumerate(table[table[gcol] > 0.03 * max_abs].nlargest(7, gcol).iterrows(), 1):

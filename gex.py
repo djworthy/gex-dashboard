@@ -71,7 +71,9 @@ def prepare(df: pd.DataFrame, window_days, now=None):
     out = out[secs > 0]  # drop anything already expired
 
     if window_days == 0:
-        out = out[out["expiry"] == today]
+        # nearest live expiry: today's during the session, the next one after the close
+        if not out.empty:
+            out = out[out["expiry"] == out["expiry"].min()]
     elif window_days is not None:
         out = out[out["expiry"] <= today + timedelta(days=window_days)]
     return out
