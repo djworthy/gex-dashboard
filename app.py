@@ -266,6 +266,36 @@ fig2.update_layout(title="Total net gamma if spot moved here", template="plotly_
                    margin=dict(l=10, r=10, t=50, b=10), xaxis_title=unit, yaxis_title="$ per 1% move")
 st.plotly_chart(fig2, width="stretch")
 
+# ---------------------------------------------------------------- TradingView export
+st.markdown("#### TradingView levels")
+tv_units = st.radio(
+    "Your TradingView chart is", ["Futures (NQ1! / ES1!)", "Underlying (QQQ / SPX)"],
+    horizontal=True,
+)
+use_fut = tv_units.startswith("Futures") and fut is not None
+conv = (lambda x: to_fut(x)) if use_fut else (lambda x: x)
+
+
+def num(x):
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
+gcol = "gex_vol" if weight == "volume" else "gex_oi"
+max_abs = table[gcol].abs().max() or 1
+lv = [f"ASOF,{cfg['chain'].strip('_')} {window} · {stamp}"]
+if flip_main is not None:
+    lv.append(f"HVL,{num(conv(flip_main))}")
+for i, (_, r) in enumerate(table[table[gcol] > 0.03 * max_abs].nlargest(7, gcol).iterrows(), 1):
+    lv.append(f"C{i},{num(conv(r['strike']))},{r[gcol] / max_abs:.2f}")
+for i, (_, r) in enumerate(table[table[gcol] < -0.03 * max_abs].nsmallest(5, gcol).iterrows(), 1):
+    lv.append(f"P{i},{num(conv(r['strike']))},{r[gcol] / max_abs:.2f}")
+if atm:
+    lv.append(f"EM+,{num(conv(spot + atm['move_1sd']))}")
+    lv.append(f"EM-,{num(conv(spot - atm['move_1sd']))}")
+st.code(";".join(lv), language=None, wrap_lines=True)
+st.caption("Click the copy icon on the box, then paste it into the GEX Levels indicator's settings in TradingView. "
+           "Levels follow the product, expiry window and weighting selected above. Re-copy whenever you want fresh levels.")
+
 st.markdown(
     '<div class="note">The dealer sign is assumed (dealers long calls, short puts), which real positioning often contradicts. '
     "Data is ~15 minutes delayed. Treat this as a map, not a trading signal.</div>",
