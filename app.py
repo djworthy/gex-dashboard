@@ -17,7 +17,7 @@ WINDOWS = {"0DTE": 0, "1D": 1, "7D": 7, "31D": 31, "91D": 91, "All": None}
 
 CSS = """
 <style>
-.block-container {padding-top: 2rem;}
+.block-container {padding-top: 3.5rem;}
 .cards {display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:14px; margin:8px 0 18px;}
 .card {background:#161b22; border:1px solid #2a313c; border-radius:8px; padding:16px 20px;}
 .card .lbl {color:#9aa4b2; font-size:0.85rem; letter-spacing:0.02em;}
@@ -145,10 +145,11 @@ lo_k, hi_k = spot * (1 - chart_range / 100), spot * (1 + chart_range / 100)
 view = strikes[(strikes["strike"] >= lo_k) & (strikes["strike"] <= hi_k)]
 
 
-def vline(fig, x, text, color):
+def vline(fig, x, text, color, side="right"):
     if x is not None:
         fig.add_vline(x=to_fut(x), line_dash="dot", line_color=color,
-                      annotation_text=text, annotation_position="top")
+                      annotation_text=text, annotation_position=f"top {side}",
+                      annotation_font_color=color)
 
 
 left, right = st.columns(2)
@@ -158,8 +159,8 @@ fig = go.Figure(go.Bar(
     marker_color=np.where(view["gex"] >= 0, "#3fb950", "#f85149"),
     hovertemplate="strike %{x:,.0f}<br>gamma $%{y:,.0f}<extra></extra>",
 ))
-vline(fig, spot, "spot", "#e8edf3")
-vline(fig, flip_main, "flip", "#d29922")
+vline(fig, spot, "spot", "#8b949e", "right" if flip_main is None or spot >= flip_main else "left")
+vline(fig, flip_main, "flip", "#d29922", "left" if flip_main is None or spot >= flip_main else "right")
 fig.update_layout(title="Net gamma by strike", template="plotly_dark", height=420,
                   margin=dict(l=10, r=10, t=50, b=10), xaxis_title=unit, yaxis_title="$ per 1% move")
 left.plotly_chart(fig, width="stretch")
@@ -167,8 +168,8 @@ left.plotly_chart(fig, width="stretch")
 mask = (grid >= lo_k) & (grid <= hi_k)
 fig2 = go.Figure(go.Scatter(x=grid[mask] * ratio + add, y=totals[mask], line=dict(color="#58a6ff", width=2)))
 fig2.add_hline(y=0, line_color="#6e7681")
-vline(fig2, spot, "spot", "#e8edf3")
-vline(fig2, flip_main, "flip", "#d29922")
+vline(fig2, spot, "spot", "#8b949e", "right" if flip_main is None or spot >= flip_main else "left")
+vline(fig2, flip_main, "flip", "#d29922", "left" if flip_main is None or spot >= flip_main else "right")
 fig2.update_layout(title="Total net gamma if spot moved here", template="plotly_dark", height=420,
                    margin=dict(l=10, r=10, t=50, b=10), xaxis_title=unit, yaxis_title="$ per 1% move")
 right.plotly_chart(fig2, width="stretch")
