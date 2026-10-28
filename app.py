@@ -282,7 +282,7 @@ def num(x):
 
 gcol = "gex_vol" if weight == "volume" else "gex_oi"
 max_abs = table[gcol].abs().max() or 1
-lv = [f"ASOF,{cfg['chain'].strip('_')} {window} · {stamp}"]
+lv = [f"ASOF,{cfg['chain'].strip('_')} {window} · {stamp}", f"TAG,{window} ({datetime.now(gex.ET):%m/%d})"]
 if flip_main is not None:
     lv.append(f"HVL,{num(conv(flip_main))}")
 for i, (_, r) in enumerate(table[table[gcol] > 0.03 * max_abs].nlargest(7, gcol).iterrows(), 1):
