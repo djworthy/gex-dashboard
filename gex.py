@@ -171,7 +171,28 @@ def fmt_big(x):
     if x is None:
         return "—"
     a = abs(x)
-    for div, suf in [(1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "k")]:
+    for div, suf, dp in [(1e12, "T", 2), (1e9, "B", 2), (1e6, "M", 1), (1e3, "k", 1)]:
         if a >= div:
-            return f"{x / div:.2f}{suf}"
+            return f"{x / div:.{dp}f}{suf}"
     return f"{x:.0f}"
+
+
+def strike_table(df, S):
+    """One row per strike with volume, OI, gamma and delta exposure."""
+    is_call = df["type"].values == "C"
+    d = bs_delta(S, df["strike"].values, df["T"].values, df["iv"].values, is_call)
+    t = df.assign(
+        call_vol=np.where(is_call, df["volume"], 0),
+        put_vol=np.where(is_call, 0, df["volume"]),
+        call_oi=np.where(is_call, df["open_interest"], 0),
+        put_oi=np.where(is_call, 0, df["open_interest"]),
+        gex_vol=gex_per_option(df, S, "volume"),
+        gex_oi=gex_per_option(df, S, "oi"),
+        delta_vol=dealer_sign(df) * d * df["volume"].values * 100 * S,
+    )
+    cols = ["call_vol", "put_vol", "call_oi", "put_oi", "gex_vol", "gex_oi", "delta_vol"]
+    out = t.groupby("strike", as_index=False)[cols].sum()
+    out["volume"] = out["call_vol"] + out["put_vol"]
+    out["oi"] = out["call_oi"] + out["put_oi"]
+    out["dealer_pos"] = out["call_oi"] - out["put_oi"]  # assumed: long calls, short puts
+    return out

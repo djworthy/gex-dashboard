@@ -25,6 +25,14 @@ CSS = """
 .card .sub {color:#9aa4b2; font-size:0.85rem; line-height:1.4;}
 .note {color:#9aa4b2; font-size:0.85rem; background:#161b22; border:1px solid #2a313c;
        border-radius:8px; padding:10px 14px;}
+.kgrid {display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:18px 28px;}
+.ktitle {color:#9aa4b2; font-size:0.85rem; margin-bottom:6px;}
+.ktable {width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:0.92rem;}
+.ktable td {padding:7px 6px; border-top:1px solid #2a313c; color:#e8edf3; white-space:nowrap;}
+.ktable tr:first-child td {border-top:none;}
+.ktable td.num {text-align:right;}
+.dim {color:#8b949e;}
+.kblock {background:#161b22; border:1px solid #2a313c; border-radius:8px; padding:12px 16px;}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -142,7 +150,8 @@ st.markdown(html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- charts
 lo_k, hi_k = spot * (1 - chart_range / 100), spot * (1 + chart_range / 100)
-view = strikes[(strikes["strike"] >= lo_k) & (strikes["strike"] <= hi_k)]
+table = gex.strike_table(df, spot)
+view = table[(table["strike"] >= lo_k) & (table["strike"] <= hi_k)]
 
 
 def vline(fig, x, text, color, side="right"):
@@ -152,18 +161,86 @@ def vline(fig, x, text, color, side="right"):
                       annotation_font_color=color)
 
 
-left, right = st.columns(2)
+def hline(fig, y, text, color, dash="dot"):
+    if y is not None:
+        fig.add_hline(y=to_fut(y), line_dash=dash, line_color=color, line_width=1,
+                      annotation_text=text, annotation_position="right",
+                      annotation_font_color=color, annotation_font_size=11)
 
-fig = go.Figure(go.Bar(
-    x=view["strike"] * ratio + add, y=view["gex"],
-    marker_color=np.where(view["gex"] >= 0, "#3fb950", "#f85149"),
-    hovertemplate="strike %{x:,.0f}<br>gamma $%{y:,.0f}<extra></extra>",
-))
-vline(fig, spot, "spot", "#8b949e", "right" if flip_main is None or spot >= flip_main else "left")
-vline(fig, flip_main, "flip", "#d29922", "left" if flip_main is None or spot >= flip_main else "right")
-fig.update_layout(title="Net gamma by strike", template="plotly_dark", height=420,
-                  margin=dict(l=10, r=10, t=50, b=10), xaxis_title=unit, yaxis_title="$ per 1% move")
-left.plotly_chart(fig, width="stretch")
+
+GREEN, RED = "#3fb950", "#f85149"
+left, right = st.columns([1, 1.15])
+
+with left:
+    st.markdown("#### Strike profile")
+    mode = st.segmented_control(
+        "View", ["Gamma volume", "Delta volume", "Dealer position", "Open interest"],
+        default="Gamma volume", label_visibility="collapsed",
+    ) or "Gamma volume"
+    y = view["strike"] * ratio + add
+    fig = go.Figure()
+    if mode == "Open interest":
+        fig.add_bar(y=y, x=view["call_oi"], orientation="h", name="calls", marker_color=GREEN,
+                    hovertemplate="%{y:,.0f}<br>call OI %{x:,.0f}<extra></extra>")
+        fig.add_bar(y=y, x=-view["put_oi"], orientation="h", name="puts", marker_color=RED,
+                    customdata=view["put_oi"], hovertemplate="%{y:,.0f}<br>put OI %{customdata:,.0f}<extra></extra>")
+        fig.update_layout(barmode="relative")
+        xlab, note = "contracts", "Open interest per strike. Right/green = calls, left/red = puts."
+    else:
+        col, xlab, note = {
+            "Gamma volume": ("gex_vol", "$ gamma per 1% move",
+                             "Gamma × volume per strike. Right/green = positive, left/red = negative."),
+            "Delta volume": ("delta_vol", "$ delta",
+                             "Assumed dealer delta × volume per strike."),
+            "Dealer position": ("dealer_pos", "contracts",
+                                "Assumed dealer contracts per strike (call OI minus put OI)."),
+        }[mode]
+        vals = view[col]
+        fig.add_bar(y=y, x=vals, orientation="h", marker_color=np.where(vals >= 0, GREEN, RED),
+                    hovertemplate="%{y:,.0f}<br>%{x:,.3s}<extra></extra>")
+    hline(fig, spot, f"spot {fmt(f_spot)}", "#c9d1d9", "solid")
+    hline(fig, flip_main, f"flip {fmt(to_fut(flip_main))}", "#d29922", "dash")
+    if atm:
+        hline(fig, spot + atm["move_1sd"], f"EM ↑ {fmt(hi)}", "#58a6ff")
+        hline(fig, spot - atm["move_1sd"], f"EM ↓ {fmt(lo)}", "#58a6ff")
+    fig.update_layout(template="plotly_dark", height=560, showlegend=False, bargap=0.15,
+                      margin=dict(l=10, r=110, t=10, b=10), xaxis_title=xlab, dragmode="pan")
+    fig.update_yaxes(tickformat=",.0f")
+    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True})
+    st.caption(note + " Lines: spot, gamma flip, expected move. Scroll to zoom, drag to pan, double-click to reset.")
+
+
+def rows_html(frame, kind):
+    out = []
+    for _, r in frame.iterrows():
+        k = f'{r["strike"]:,g}'
+        if kind == "vol":
+            right_txt = f'{gex.fmt_big(r["volume"])} <span class="dim">({gex.fmt_big(r["call_vol"])}c / {gex.fmt_big(r["put_vol"])}p)</span>'
+        elif kind == "oi":
+            right_txt = f'{gex.fmt_big(r["oi"])} <span class="dim">({gex.fmt_big(r["call_oi"])}c / {gex.fmt_big(r["put_oi"])}p)</span>'
+        else:
+            right_txt = gex.fmt_big(r["gex_vol"])
+        out.append(f'<tr><td>{k}</td><td class="dim">≈ {fmt(to_fut(r["strike"]))}</td><td class="num">{right_txt}</td></tr>')
+    return "".join(out)
+
+
+def block(title, frame, kind):
+    return f'<div class="kblock"><div class="ktitle">{title}</div><table class="ktable">{rows_html(frame, kind)}</table></div>'
+
+
+with right:
+    st.markdown("#### Key strikes")
+    pos_g = table[table["gex_vol"] > 0].nlargest(5, "gex_vol")
+    neg_g = table[table["gex_vol"] < 0].nsmallest(5, "gex_vol")
+    st.markdown(
+        '<div class="kgrid">'
+        + block("Most volume", table.nlargest(6, "volume"), "vol")
+        + block("Most open interest", table.nlargest(6, "oi"), "oi")
+        + block("Largest + gamma × volume", pos_g, "gex")
+        + block("Largest − gamma × volume", neg_g, "gex")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
 mask = (grid >= lo_k) & (grid <= hi_k)
 fig2 = go.Figure(go.Scatter(x=grid[mask] * ratio + add, y=totals[mask], line=dict(color="#58a6ff", width=2)))
@@ -172,7 +249,7 @@ vline(fig2, spot, "spot", "#8b949e", "right" if flip_main is None or spot >= fli
 vline(fig2, flip_main, "flip", "#d29922", "left" if flip_main is None or spot >= flip_main else "right")
 fig2.update_layout(title="Total net gamma if spot moved here", template="plotly_dark", height=420,
                    margin=dict(l=10, r=10, t=50, b=10), xaxis_title=unit, yaxis_title="$ per 1% move")
-right.plotly_chart(fig2, width="stretch")
+st.plotly_chart(fig2, width="stretch")
 
 st.markdown(
     '<div class="note">The dealer sign is assumed (dealers long calls, short puts), which real positioning often contradicts. '
