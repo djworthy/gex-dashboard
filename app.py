@@ -22,6 +22,7 @@ CSS = """
 .card {background:#161b22; border:1px solid #2a313c; border-radius:8px; padding:16px 20px;}
 .card .lbl {color:#9aa4b2; font-size:0.85rem; letter-spacing:0.02em;}
 .card .val {color:#e8edf3; font-size:1.7rem; font-weight:600; margin:4px 0; font-variant-numeric:tabular-nums;}
+.card.pos {border-color:#3fb950;} .card.neg {border-color:#f85149;} .card.mix {border-color:#d29922;}
 .card .sub {color:#9aa4b2; font-size:0.85rem; line-height:1.4;}
 .note {color:#9aa4b2; font-size:0.85rem; background:#161b22; border:1px solid #2a313c;
        border-radius:8px; padding:10px 14px;}
@@ -38,8 +39,9 @@ CSS = """
 st.markdown(CSS, unsafe_allow_html=True)
 
 
-def card(label, value, sub=""):
-    return f'<div class="card"><div class="lbl">{label}</div><div class="val">{value}</div><div class="sub">{sub}</div></div>'
+def card(label, value, sub="", color=None, cls=""):
+    style = f' style="color:{color}"' if color else ""
+    return f'<div class="card {cls}"><div class="lbl">{label}</div><div class="val"{style}>{value}</div><div class="sub">{sub}</div></div>'
 
 
 @st.cache_data(ttl=60, show_spinner="Loading option chain…")
@@ -135,6 +137,18 @@ if atm:
 else:
     em_val = em_sub = iv_val = iv_sub = "—"
 
+net_main = net_g_vol if weight == "volume" else net_g_oi
+net_pos = net_main > 0
+above_flip = None if flip_main is None else spot > flip_main
+if above_flip is None or above_flip == net_pos:
+    regime, r_color, r_cls = ("Positive", "#3fb950", "pos") if net_pos else ("Negative", "#f85149", "neg")
+    r_hint = "expect tighter, mean-reverting ranges" if net_pos else "expect wider, trending moves"
+else:
+    regime, r_color, r_cls = "Mixed", "#d29922", "mix"
+    r_hint = "net gamma and flip disagree"
+r_sub = (f"net gamma {gex.fmt_big(net_main)} · spot {'above' if above_flip else 'below'} flip · " if above_flip is not None
+         else f"net gamma {gex.fmt_big(net_main)} · ") + r_hint + " (dealer sign assumed)"
+
 st.caption(f"{cfg['chain'].strip('_')} chain · CBOE delayed data · {stamp} · {len(df):,} options in window · levels in {unit}")
 
 html = '<div class="cards">' + "".join([
@@ -145,6 +159,7 @@ html = '<div class="cards">' + "".join([
     card("ATM IV", iv_val, iv_sub),
     card("Call / put volume", f"{gex.fmt_big(cv)} / {gex.fmt_big(pv)}", f"put/call {pv / cv:.2f} · OI {gex.fmt_big(coi)} / {gex.fmt_big(poi)}" if cv else ""),
     card("Net gamma × volume", gex.fmt_big(net_g_vol), f"× OI {gex.fmt_big(net_g_oi)} · net delta × volume {gex.fmt_big(net_d_vol)}"),
+    card("Gamma regime", regime, r_sub, r_color, r_cls),
 ]) + "</div>"
 st.markdown(html, unsafe_allow_html=True)
 
