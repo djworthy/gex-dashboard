@@ -28,9 +28,20 @@ CSS = """
 .stApp input, [data-baseweb="input"], [data-baseweb="input"] > div, [data-baseweb="base-input"],
 [data-testid="stNumberInputContainer"] {background-color:@CARD@ !important; color:@FG@ !important;}
 [data-testid="stNumberInputStepDown"], [data-testid="stNumberInputStepUp"] {background-color:@CARD@ !important; color:@FG@ !important;}
-.stApp [data-testid="stBaseButton-secondary"], .stApp [data-testid="stBaseButton-segmented_control"] {
-  background-color:@CARD@ !important; color:@FG@ !important; border-color:@BORDER@ !important;}
-.stApp [data-testid="stBaseButton-segmented_control"] * {color:@FG@ !important;}
+/* buttons: segmented controls + Refresh */
+.stApp [data-testid="stButtonGroup"] button, .stApp .stButton button,
+.stApp button[kind="secondary"], .stApp button[kind^="segmented_control"] {
+  background-color:@CARD@ !important; color:@MUTED@ !important; border-color:@BORDER@ !important;
+  transition:background-color .15s, color .15s;}
+.stApp [data-testid="stButtonGroup"] button *, .stApp .stButton button * {color:inherit !important;}
+.stApp [data-testid="stButtonGroup"] button:hover, .stApp .stButton button:hover {
+  color:@FG@ !important; border-color:@ACCENT@ !important;}
+.stApp [data-testid="stButtonGroup"] button[kind$="Active"],
+.stApp [data-testid="stButtonGroup"] button[aria-checked="true"],
+.stApp [data-testid="stButtonGroup"] button[aria-pressed="true"],
+.stApp button[kind="segmented_controlActive"] {
+  background-color:@ACTIVE@ !important; color:@FG@ !important; border-color:@ACCENT@ !important;
+  font-weight:600;}
 [data-testid="stCode"] pre, [data-testid="stCode"] code {background-color:@CARD@ !important; color:@FG@ !important;}
 [data-testid="stHeader"] button, [data-testid="stToolbar"] * {color:@FG@ !important;}
 hr {border-color:@BORDER@ !important;}
@@ -116,6 +127,8 @@ TH = {
     "bg": "#0d1117" if DARK else "#ffffff",
     "card": "#161b22" if DARK else "#f6f8fa",
     "side": "#010409" if DARK else "#f6f8fa",
+    "accent": "#58a6ff" if DARK else "#0969da",
+    "active": "#1f3a5f" if DARK else "#ddf4ff",
     "border": "#2a313c" if DARK else "#d0d7de",
     "fg": "#e8edf3" if DARK else "#1f2328",
     "muted": "#9aa4b2" if DARK else "#59636e",
@@ -124,7 +137,7 @@ TH = {
     "zero": "#6e7681" if DARK else "#afb8c1",
 }
 st.markdown(
-    CSS.replace("@BG@", TH["bg"]).replace("@SIDE@", TH["side"]).replace("@CARD@", TH["card"]).replace("@BORDER@", TH["border"]).replace("@FG@", TH["fg"])
+    CSS.replace("@BG@", TH["bg"]).replace("@ACCENT@", TH["accent"]).replace("@ACTIVE@", TH["active"]).replace("@SIDE@", TH["side"]).replace("@CARD@", TH["card"]).replace("@BORDER@", TH["border"]).replace("@FG@", TH["fg"])
        .replace("@MUTED@", TH["muted"]).replace("@DIM@", TH["dim"]),
     unsafe_allow_html=True,
 )
