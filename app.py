@@ -51,6 +51,20 @@ def load_chain(symbol):
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def load_candles(ticker, interval):
+    try:
+        import yfinance as yf
+
+        h = yf.Ticker(ticker).history(period="5d", interval=interval)
+        if h is None or h.empty:
+            return None
+        h.index = h.index.tz_convert(gex.ET)
+        return h
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def load_future(ticker):
     return gex.fetch_futures_price(ticker)
 
@@ -96,7 +110,7 @@ auto_refresher()
 
 # ---------------------------------------------------------------- data
 try:
-    raw, spot, stamp = load_chain(cfg["chain"])
+    raw, spot, stamp, prev_close = load_chain(cfg["chain"])
 except Exception as e:
     st.error(f"Couldn't download the {cfg['chain']} chain from CBOE: {e}. Press Refresh data to try again.")
     st.stop()
@@ -135,6 +149,7 @@ flip_oi = gex.gamma_flip(*gex.gamma_profile(df, spot, "oi", pct=0.08), spot)
 strikes = gex.by_strike(df, spot, weight)
 pole_neg, pole_pos = gex.poles(strikes)
 atm = gex.atm_stats(df, spot)
+dem = gex.daily_expected_move(gex.prepare(raw, None), spot, prev_close)
 
 net_g_vol = gex.gex_per_option(df, spot, "volume").sum()
 net_g_oi = gex.gex_per_option(df, spot, "oi").sum()
@@ -160,6 +175,8 @@ if atm:
     if atm["straddle"]:
         em_sub += f" · straddle ±{atm['straddle'] * ratio:,.0f}"
     iv_val, iv_sub = f"{atm['iv'] * 100:.1f}%", f"ATM, expiry {atm['expiry']}"
+    if dem:
+        em_sub += f" · daily {fmt(to_fut(dem['anchor'] - dem['move']))}–{fmt(to_fut(dem['anchor'] + dem['move']))}"
 else:
     em_val = em_sub = iv_val = iv_sub = "—"
 
@@ -210,6 +227,71 @@ def hline(fig, y, text, color, dash="dot"):
 
 
 GREEN, RED = "#3fb950", "#f85149"
+
+# ---------------------------------------------------------------- price chart
+st.markdown("#### Price chart")
+pc1, pc2 = st.columns([1, 2.5])
+candle_iv = pc1.segmented_control("Candles", ["1m", "5m", "15m"], default="5m", label_visibility="collapsed") or "5m"
+layers = pc2.segmented_control(
+    "Show", ["Gamma levels", "Expected move", "Daily EM"], selection_mode="multi",
+    default=["Gamma levels", "Expected move", "Daily EM"], label_visibility="collapsed",
+) or []
+UNDERLYING_TICKER = {"QQQ": "QQQ", "_SPX": "^GSPC"}
+chart_ticker = cfg["future"] if fut else UNDERLYING_TICKER[cfg["chain"]]
+candles = load_candles(chart_ticker, candle_iv)
+
+if candles is None:
+    st.info("Price candles couldn't be loaded right now (Yahoo sometimes blocks cloud servers). Try Refresh data in a minute.")
+else:
+    n_bars = {"1m": 390, "5m": 156, "15m": 96}[candle_iv]
+    cd = candles.tail(n_bars)
+    pfig = go.Figure(go.Candlestick(
+        x=cd.index, open=cd["Open"], high=cd["High"], low=cd["Low"], close=cd["Close"],
+        increasing_line_color=GREEN, decreasing_line_color=RED, name=chart_ticker,
+    ))
+    y_lo, y_hi = float(cd["Low"].min()), float(cd["High"].max())
+
+    def level(y, text, color, dash="solid", width=1, opacity=1.0, extend=True):
+        global y_lo, y_hi
+        if y is None:
+            return
+        pfig.add_hline(y=y, line_color=color, line_dash=dash, line_width=width, opacity=opacity,
+                       annotation_text=text, annotation_position="right",
+                       annotation_font_color=color, annotation_font_size=11)
+        if extend:
+            y_lo, y_hi = min(y_lo, y), max(y_hi, y)
+
+    gcol_c = "gex_vol" if weight == "volume" else "gex_oi"
+    max_abs_c = table[gcol_c].abs().max() or 1
+    if "Gamma levels" in layers:
+        near = lambda y: abs(y - to_fut(spot)) <= to_fut(spot) * 0.02  # only stretch the view for nearby levels
+        for i, (_, r) in enumerate(table[table[gcol_c] > 0.03 * max_abs_c].nlargest(5, gcol_c).iterrows(), 1):
+            y = to_fut(r["strike"])
+            level(y, f"C{i} {fmt(y)}", GREEN, "solid" if i <= 3 else "dot", 2 if i == 1 else 1,
+                  max(0.35, 1 - (i - 1) * 0.15), near(y))
+        for i, (_, r) in enumerate(table[table[gcol_c] < -0.03 * max_abs_c].nsmallest(5, gcol_c).iterrows(), 1):
+            y = to_fut(r["strike"])
+            level(y, f"P{i} {fmt(y)}", RED, "solid" if i <= 3 else "dot", 2 if i == 1 else 1,
+                  max(0.35, 1 - (i - 1) * 0.15), near(y))
+        if flip_main is not None:
+            level(to_fut(flip_main), f"HVL {fmt(to_fut(flip_main))}", "#22b8cf", "solid", 2)
+    if "Expected move" in layers and atm:
+        level(to_fut(spot + atm["move_1sd"]), f"EM ↑ {fmt(hi)}", "#a371f7", "dash")
+        level(to_fut(spot - atm["move_1sd"]), f"EM ↓ {fmt(lo)}", "#a371f7", "dash")
+    if "Daily EM" in layers and dem:
+        d_hi, d_lo = to_fut(dem["anchor"] + dem["move"]), to_fut(dem["anchor"] - dem["move"])
+        level(d_hi, f"Daily EM ↑ {fmt(d_hi)}", "#ff9800", "dash", 2)
+        level(d_lo, f"Daily EM ↓ {fmt(d_lo)}", "#ff9800", "dash", 2)
+
+    pad = (y_hi - y_lo) * 0.05 or 1
+    pfig.update_layout(template="plotly_dark", height=600, showlegend=False, dragmode="pan",
+                       margin=dict(l=10, r=150, t=10, b=10), xaxis_rangeslider_visible=False)
+    pfig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    pfig.update_yaxes(range=[y_lo - pad, y_hi + pad], tickformat=",.0f", side="left")
+    st.plotly_chart(pfig, width="stretch", config={"scrollZoom": True})
+    st.caption(f"{chart_ticker} candles from Yahoo (delayed). Levels match the dashboard's current settings. "
+               "Scroll to zoom, drag to pan, double-click to reset.")
+
 left, right = st.columns([1, 1.15])
 
 with left:
@@ -318,6 +400,9 @@ for i, (_, r) in enumerate(table[table[gcol] < -0.03 * max_abs].nsmallest(5, gco
 if atm:
     lv.append(f"EM+,{num(conv(spot + atm['move_1sd']))}")
     lv.append(f"EM-,{num(conv(spot - atm['move_1sd']))}")
+if dem:
+    lv.append(f"DEM+,{num(conv(dem['anchor'] + dem['move']))}")
+    lv.append(f"DEM-,{num(conv(dem['anchor'] - dem['move']))}")
 st.code(";".join(lv), language=None, wrap_lines=True)
 st.caption("Click the copy icon on the box, then paste it into the GEX Levels indicator's settings in TradingView. "
            "Levels follow the product, expiry window and weighting selected above. Re-copy whenever you want fresh levels.")
