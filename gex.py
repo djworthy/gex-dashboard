@@ -41,7 +41,9 @@ def fetch_cboe_chain(symbol: str):
         df[col] = pd.to_numeric(df.get(col, 0), errors="coerce").fillna(0)
 
     df = df.dropna(subset=["expiry", "strike", "type"])
-    return df, spot, payload.get("timestamp", "")
+    prev = data.get("prev_day_close")
+    prev = float(prev) if prev not in (None, "", 0) else None
+    return df, spot, payload.get("timestamp", ""), prev
 
 
 def fetch_futures_price(ticker: str):
@@ -198,3 +200,23 @@ def strike_table(df, S):
     out["oi"] = out["call_oi"] + out["put_oi"]
     out["dealer_pos"] = out["call_oi"] - out["put_oi"]  # assumed: long calls, short puts
     return out
+
+
+def market_open(now=None):
+    now = now or datetime.now(ET)
+    return now.weekday() < 5 and time(9, 30) <= now.time() < time(16, 0)
+
+
+def daily_expected_move(df_all, S, prev_close=None, now=None):
+    """Full-session 1-sigma move from the next day's ATM IV.
+    Anchored on yesterday's close during market hours, otherwise on the latest price."""
+    now = now or datetime.now(ET)
+    nxt = df_all[df_all["expiry"] > now.date()]
+    if nxt.empty:
+        return None
+    nearest = nxt[nxt["expiry"] == nxt["expiry"].min()]
+    k = nearest.loc[(nearest["strike"] - S).abs().idxmin(), "strike"]
+    iv = float(nearest.loc[nearest["strike"] == k, "iv"].mean())
+    anchor = prev_close if (market_open(now) and prev_close) else S
+    move = anchor * iv * np.sqrt(1 / 252)
+    return {"anchor": anchor, "iv": iv, "move": move, "anchored_on": "prior close" if anchor != S else "last price"}
