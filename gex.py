@@ -220,3 +220,28 @@ def daily_expected_move(df_all, S, prev_close=None, now=None):
     anchor = prev_close if (market_open(now) and prev_close) else S
     move = anchor * iv * np.sqrt(1 / 252)
     return {"anchor": anchor, "iv": iv, "move": move, "anchored_on": "prior close" if anchor != S else "last price"}
+
+
+def clean_candles(h, k=6.0):
+    """Repair obviously bad bars from free data feeds (e.g. a last bar whose open is
+    hundreds of points away from the previous close). Real session-open gaps are kept."""
+    h = h.dropna(subset=["Open", "High", "Low", "Close"]).copy()
+    h = h[(h[["Open", "High", "Low", "Close"]] > 0).all(axis=1)]
+    if len(h) < 5:
+        return h
+    rng = (h["High"] - h["Low"]).abs()
+    typical = rng.rolling(50, min_periods=5).median().bfill().fillna(rng.median())
+    tol = k * typical.clip(lower=rng[rng > 0].median() if (rng > 0).any() else 1.0)
+
+    prev_close = h["Close"].shift(1)
+    step = h.index.to_series().diff()
+    normal_step = step.median()
+    after_gap = step > normal_step * 1.5          # first bar after a pause: real gaps allowed
+    bad_open = ((h["Open"] - prev_close).abs() > tol) & ~after_gap & prev_close.notna()
+    h.loc[bad_open, "Open"] = prev_close[bad_open]
+
+    body_hi = h[["Open", "Close"]].max(axis=1)
+    body_lo = h[["Open", "Close"]].min(axis=1)
+    h["High"] = np.maximum(np.minimum(h["High"], body_hi + tol), body_hi)
+    h["Low"] = np.minimum(np.maximum(h["Low"], body_lo - tol), body_lo)
+    return h

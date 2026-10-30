@@ -20,24 +20,23 @@ CSS = """
 <style>
 .block-container {padding-top: 3.5rem;}
 .cards {display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:14px; margin:8px 0 18px;}
-.card {background:#161b22; border:1px solid #2a313c; border-radius:8px; padding:16px 20px;}
-.card .lbl {color:#9aa4b2; font-size:0.85rem; letter-spacing:0.02em;}
-.card .val {color:#e8edf3; font-size:1.7rem; font-weight:600; margin:4px 0; font-variant-numeric:tabular-nums;}
+.card {background:@CARD@; border:1px solid @BORDER@; border-radius:8px; padding:16px 20px;}
+.card .lbl {color:@MUTED@; font-size:0.85rem; letter-spacing:0.02em;}
+.card .val {color:@FG@; font-size:1.7rem; font-weight:600; margin:4px 0; font-variant-numeric:tabular-nums;}
 .card.pos {border-color:#3fb950;} .card.neg {border-color:#f85149;} .card.mix {border-color:#d29922;}
-.card .sub {color:#9aa4b2; font-size:0.85rem; line-height:1.4;}
-.note {color:#9aa4b2; font-size:0.85rem; background:#161b22; border:1px solid #2a313c;
+.card .sub {color:@MUTED@; font-size:0.85rem; line-height:1.4;}
+.note {color:@MUTED@; font-size:0.85rem; background:@CARD@; border:1px solid @BORDER@;
        border-radius:8px; padding:10px 14px;}
 .kgrid {display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:18px 28px;}
-.ktitle {color:#9aa4b2; font-size:0.85rem; margin-bottom:6px;}
+.ktitle {color:@MUTED@; font-size:0.85rem; margin-bottom:6px;}
 .ktable {width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:0.92rem;}
-.ktable td {padding:7px 6px; border-top:1px solid #2a313c; color:#e8edf3; white-space:nowrap;}
+.ktable td {padding:7px 6px; border-top:1px solid @BORDER@; color:@FG@; white-space:nowrap;}
 .ktable tr:first-child td {border-top:none;}
 .ktable td.num {text-align:right;}
-.dim {color:#8b949e;}
-.kblock {background:#161b22; border:1px solid #2a313c; border-radius:8px; padding:12px 16px;}
+.dim {color:@DIM@;}
+.kblock {background:@CARD@; border:1px solid @BORDER@; border-radius:8px; padding:12px 16px;}
 </style>
 """
-st.markdown(CSS, unsafe_allow_html=True)
 
 
 def card(label, value, sub="", color=None, cls=""):
@@ -59,7 +58,7 @@ def load_candles(ticker, interval):
         if h is None or h.empty:
             return None
         h.index = h.index.tz_convert(gex.ET)
-        return h
+        return gex.clean_candles(h)
     except Exception:
         return None
 
@@ -91,6 +90,32 @@ with st.sidebar:
     st.caption(f"Last updated {datetime.now(gex.ET):%I:%M:%S %p} ET")
 
 cfg = PRODUCTS[product]
+
+# ---------------------------------------------------------------- theme
+DARK = st.session_state.get("chart_theme", "Dark") != "Light"
+TH = {
+    "template": "plotly_dark" if DARK else "plotly_white",
+    "bg": "#0d1117" if DARK else "#ffffff",
+    "card": "#161b22" if DARK else "#f6f8fa",
+    "border": "#2a313c" if DARK else "#d0d7de",
+    "fg": "#e8edf3" if DARK else "#1f2328",
+    "muted": "#9aa4b2" if DARK else "#59636e",
+    "dim": "#8b949e" if DARK else "#6e7781",
+    "spot": "#c9d1d9" if DARK else "#424a53",
+    "zero": "#6e7681" if DARK else "#afb8c1",
+}
+st.markdown(
+    CSS.replace("@CARD@", TH["card"]).replace("@BORDER@", TH["border"]).replace("@FG@", TH["fg"])
+       .replace("@MUTED@", TH["muted"]).replace("@DIM@", TH["dim"]),
+    unsafe_allow_html=True,
+)
+
+
+def style(fig, **kw):
+    fig.update_layout(template=TH["template"], paper_bgcolor=TH["bg"], plot_bgcolor=TH["bg"],
+                      font_color=TH["fg"], **kw)
+    return fig
+
 
 # ---------------------------------------------------------------- auto-refresh
 st.session_state["last_run"] = time.time()
@@ -230,7 +255,7 @@ GREEN, RED = "#3fb950", "#f85149"
 
 # ---------------------------------------------------------------- price chart
 st.markdown("#### Price chart")
-pc1, pc2 = st.columns([1, 2.5])
+pc1, pc2, pc3 = st.columns([1, 2.5, 1])
 candle_iv = pc1.segmented_control("Candles", ["1m", "5m", "15m"], default="5m", label_visibility="collapsed") or "5m"
 layers = pc2.segmented_control(
     "Show", ["Gamma levels", "Expected move", "Daily EM"], selection_mode="multi",
@@ -238,6 +263,8 @@ layers = pc2.segmented_control(
 ) or []
 UNDERLYING_TICKER = {"QQQ": "QQQ", "_SPX": "^GSPC"}
 chart_ticker = cfg["future"] if fut else UNDERLYING_TICKER[cfg["chain"]]
+pc3.segmented_control("Theme", ["Dark", "Light"], default="Dark", key="chart_theme",
+                       label_visibility="collapsed")
 candles = load_candles(chart_ticker, candle_iv)
 
 if candles is None:
@@ -284,11 +311,11 @@ else:
         level(d_lo, f"Daily EM ↓ {fmt(d_lo)}", "#ff9800", "dash", 2)
 
     pad = (y_hi - y_lo) * 0.05 or 1
-    pfig.update_layout(template="plotly_dark", height=600, showlegend=False, dragmode="pan",
+    style(pfig, height=600, showlegend=False, dragmode="pan",
                        margin=dict(l=10, r=150, t=10, b=10), xaxis_rangeslider_visible=False)
     pfig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
     pfig.update_yaxes(range=[y_lo - pad, y_hi + pad], tickformat=",.0f", side="left")
-    st.plotly_chart(pfig, width="stretch", config={"scrollZoom": True})
+    st.plotly_chart(pfig, width="stretch", config={"scrollZoom": True}, theme=None)
     st.caption(f"{chart_ticker} candles from Yahoo (delayed). Levels match the dashboard's current settings. "
                "Scroll to zoom, drag to pan, double-click to reset.")
 
@@ -321,15 +348,15 @@ with left:
         vals = view[col]
         fig.add_bar(y=y, x=vals, orientation="h", marker_color=np.where(vals >= 0, GREEN, RED),
                     hovertemplate="%{y:,.0f}<br>%{x:,.3s}<extra></extra>")
-    hline(fig, spot, f"spot {fmt(f_spot)}", "#c9d1d9", "solid")
+    hline(fig, spot, f"spot {fmt(f_spot)}", TH["spot"], "solid")
     hline(fig, flip_main, f"flip {fmt(to_fut(flip_main))}", "#d29922", "dash")
     if atm:
         hline(fig, spot + atm["move_1sd"], f"EM ↑ {fmt(hi)}", "#58a6ff")
         hline(fig, spot - atm["move_1sd"], f"EM ↓ {fmt(lo)}", "#58a6ff")
-    fig.update_layout(template="plotly_dark", height=560, showlegend=False, bargap=0.15,
+    style(fig, height=560, showlegend=False, bargap=0.15,
                       margin=dict(l=10, r=110, t=10, b=10), xaxis_title=xlab, dragmode="pan")
     fig.update_yaxes(tickformat=",.0f")
-    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True})
+    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True}, theme=None)
     st.caption(note + " Lines: spot, gamma flip, expected move. Scroll to zoom, drag to pan, double-click to reset.")
 
 
@@ -367,12 +394,12 @@ with right:
 
 mask = (grid >= lo_k) & (grid <= hi_k)
 fig2 = go.Figure(go.Scatter(x=grid[mask] * ratio + add, y=totals[mask], line=dict(color="#58a6ff", width=2)))
-fig2.add_hline(y=0, line_color="#6e7681")
-vline(fig2, spot, "spot", "#8b949e", "right" if flip_main is None or spot >= flip_main else "left")
+fig2.add_hline(y=0, line_color=TH["zero"])
+vline(fig2, spot, "spot", TH["dim"], "right" if flip_main is None or spot >= flip_main else "left")
 vline(fig2, flip_main, "flip", "#d29922", "left" if flip_main is None or spot >= flip_main else "right")
-fig2.update_layout(title="Total net gamma if spot moved here", template="plotly_dark", height=420,
+style(fig2, title="Total net gamma if spot moved here", height=420,
                    margin=dict(l=10, r=10, t=50, b=10), xaxis_title=unit, yaxis_title="$ per 1% move")
-st.plotly_chart(fig2, width="stretch")
+st.plotly_chart(fig2, width="stretch", theme=None)
 
 # ---------------------------------------------------------------- TradingView export
 st.markdown("#### TradingView levels")
