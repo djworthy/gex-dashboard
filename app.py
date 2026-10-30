@@ -18,6 +18,24 @@ WINDOWS = {"0DTE": 0, "1D": 1, "7D": 7, "31D": 31, "91D": 91, "All": None}
 
 CSS = """
 <style>
+/* ---- whole-page theme (follows the Dark / Light switch) ---- */
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"], [data-testid="stHeader"],
+[data-testid="stBottomBlockContainer"] {background-color:@BG@ !important; color:@FG@;}
+[data-testid="stSidebar"], [data-testid="stSidebarContent"] {background-color:@SIDE@ !important;}
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp p, .stApp li, .stApp label,
+[data-testid="stWidgetLabel"] *, [data-testid="stSidebar"] * {color:@FG@;}
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] * {color:@MUTED@ !important;}
+.stApp input, [data-baseweb="input"], [data-baseweb="input"] > div, [data-baseweb="base-input"],
+[data-testid="stNumberInputContainer"] {background-color:@CARD@ !important; color:@FG@ !important;}
+[data-testid="stNumberInputStepDown"], [data-testid="stNumberInputStepUp"] {background-color:@CARD@ !important; color:@FG@ !important;}
+.stApp [data-testid="stBaseButton-secondary"], .stApp [data-testid="stBaseButton-segmented_control"] {
+  background-color:@CARD@ !important; color:@FG@ !important; border-color:@BORDER@ !important;}
+.stApp [data-testid="stBaseButton-segmented_control"] * {color:@FG@ !important;}
+[data-testid="stCode"] pre, [data-testid="stCode"] code {background-color:@CARD@ !important; color:@FG@ !important;}
+[data-testid="stHeader"] button, [data-testid="stToolbar"] * {color:@FG@ !important;}
+hr {border-color:@BORDER@ !important;}
+[data-testid="stAlertContainer"] {background-color:@CARD@ !important; border:1px solid @BORDER@;}
+[data-testid="stAlertContainer"] * {color:@FG@ !important;}
 .block-container {padding-top: 3.5rem;}
 .cards {display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:14px; margin:8px 0 18px;}
 .card {background:@CARD@; border:1px solid @BORDER@; border-radius:8px; padding:16px 20px;}
@@ -97,6 +115,7 @@ TH = {
     "template": "plotly_dark" if DARK else "plotly_white",
     "bg": "#0d1117" if DARK else "#ffffff",
     "card": "#161b22" if DARK else "#f6f8fa",
+    "side": "#010409" if DARK else "#f6f8fa",
     "border": "#2a313c" if DARK else "#d0d7de",
     "fg": "#e8edf3" if DARK else "#1f2328",
     "muted": "#9aa4b2" if DARK else "#59636e",
@@ -105,7 +124,7 @@ TH = {
     "zero": "#6e7681" if DARK else "#afb8c1",
 }
 st.markdown(
-    CSS.replace("@CARD@", TH["card"]).replace("@BORDER@", TH["border"]).replace("@FG@", TH["fg"])
+    CSS.replace("@BG@", TH["bg"]).replace("@SIDE@", TH["side"]).replace("@CARD@", TH["card"]).replace("@BORDER@", TH["border"]).replace("@FG@", TH["fg"])
        .replace("@MUTED@", TH["muted"]).replace("@DIM@", TH["dim"]),
     unsafe_allow_html=True,
 )

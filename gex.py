@@ -223,21 +223,32 @@ def daily_expected_move(df_all, S, prev_close=None, now=None):
 
 
 def clean_candles(h, k=6.0):
-    """Repair obviously bad bars from free data feeds (e.g. a last bar whose open is
-    hundreds of points away from the previous close). Real session-open gaps are kept."""
+    """Repair obviously bad bars from free data feeds (e.g. a bar whose open is hundreds of
+    points away from the previous close). Real gaps after a trading pause are kept."""
     h = h.dropna(subset=["Open", "High", "Low", "Close"]).copy()
     h = h[(h[["Open", "High", "Low", "Close"]] > 0).all(axis=1)]
     if len(h) < 5:
         return h
-    rng = (h["High"] - h["Low"]).abs()
-    typical = rng.rolling(50, min_periods=5).median().bfill().fillna(rng.median())
-    tol = k * typical.clip(lower=rng[rng > 0].median() if (rng > 0).any() else 1.0)
 
-    prev_close = h["Close"].shift(1)
     step = h.index.to_series().diff()
     normal_step = step.median()
-    after_gap = step > normal_step * 1.5          # first bar after a pause: real gaps allowed
-    bad_open = ((h["Open"] - prev_close).abs() > tol) & ~after_gap & prev_close.notna()
+
+    # Yahoo sometimes appends a "live" row whose timestamp is off the candle grid and whose
+    # OHLC is really the whole day's open/high/low. Drop off-grid rows.
+    mins = max(int(normal_step.total_seconds() // 60), 1)
+    on_grid = (h.index.second == 0) & (h.index.minute % mins == 0)
+    h = h[on_grid]
+    step = h.index.to_series().diff()
+
+    rng = (h["High"] - h["Low"]).abs()
+    floor = rng[rng > 0].median() if (rng > 0).any() else 1.0
+    typical = rng.rolling(50, min_periods=5).median().bfill().fillna(floor)
+    tol = k * typical.clip(lower=floor)
+
+    # only a genuine pause (futures daily halt, weekend) may contain a real gap
+    pause = step >= max(normal_step * 3, pd.Timedelta(minutes=50))
+    prev_close = h["Close"].shift(1)
+    bad_open = ((h["Open"] - prev_close).abs() > tol) & ~pause & prev_close.notna()
     h.loc[bad_open, "Open"] = prev_close[bad_open]
 
     body_hi = h[["Open", "Close"]].max(axis=1)
