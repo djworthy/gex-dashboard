@@ -1,6 +1,8 @@
 """Gamma exposure dashboard. Run locally with:  streamlit run app.py"""
+import json
 import time
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import plotly.graph_objects as go
@@ -77,6 +79,28 @@ def card(label, value, sub="", color=None, cls=""):
 @st.cache_data(ttl=60, show_spinner="Loading option chain…")
 def load_chain(symbol):
     return gex.fetch_cboe_chain(symbol)
+
+
+SNAP_DIR = Path(__file__).parent / "snapshots"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_snapshot(day):
+    p = SNAP_DIR / f"{day}.json"
+    try:
+        return json.loads(p.read_text()) if p.exists() else None
+    except Exception:
+        return None
+
+
+def snapshot_days():
+    return sorted((p.stem for p in SNAP_DIR.glob("*.json")), reverse=True) if SNAP_DIR.exists() else []
+
+
+@st.cache_resource
+def em_store():
+    # Shared memory for the locked expected move (one entry per day / product / expiry).
+    return {}
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -168,7 +192,8 @@ auto_refresher()
 
 # ---------------------------------------------------------------- data
 try:
-    raw, spot, stamp, prev_close = load_chain(cfg["chain"])
+    raw, spot, stamp, extras = load_chain(cfg["chain"])
+    prev_close = extras.get("prev_close")
 except Exception as e:
     st.error(f"Couldn't download the {cfg['chain']} chain from CBOE: {e}. Press Refresh data to try again.")
     st.stop()
@@ -208,6 +233,23 @@ strikes = gex.by_strike(df, spot, weight)
 pole_neg, pole_pos = gex.poles(strikes)
 atm = gex.atm_stats(df, spot)
 dem = gex.daily_expected_move(gex.prepare(raw, None), spot, prev_close)
+lock = None
+if atm:
+    lock = gex.locked_expected_move(
+        em_store(), (datetime.now(gex.ET).date(), cfg["chain"], atm["expiry"]),
+        spot, atm["iv"], extras.get("open"), atm["expiry"],
+    )
+# A saved 9:45 snapshot for today beats the in-memory lock (it survives app restarts)
+today_snap = (load_snapshot(str(datetime.now(gex.ET).date())) or {}).get(product)
+if atm and today_snap and today_snap.get("em") and today_snap.get("expiry") == str(atm["expiry"]):
+    lock = {**today_snap["em"], "locked_at": datetime.fromisoformat(today_snap["time"])}
+# EM centre and half-width used everywhere below: locked during the session, live otherwise
+if lock:
+    em_c, em_w = lock["anchor"], lock["move"]
+elif atm:
+    em_c, em_w = spot, atm["move_1sd"]
+else:
+    em_c = em_w = None
 
 net_g_vol = gex.gex_per_option(df, spot, "volume").sum()
 net_g_oi = gex.gex_per_option(df, spot, "oi").sum()
@@ -227,9 +269,13 @@ else:
     flip_sub = f"by volume · by OI {fmt(to_fut(flip_oi))} · spot is {'above' if spot > flip_main else 'below'}"
 
 if atm:
-    lo, hi = to_fut(spot - atm["move_1sd"]), to_fut(spot + atm["move_1sd"])
+    lo, hi = to_fut(em_c - em_w), to_fut(em_c + em_w)
     em_val = f"{fmt(lo)}–{fmt(hi)}"
-    em_sub = f"±{atm['move_1sd'] * ratio:,.0f} pts 1σ"
+    if lock:
+        em_sub = (f"±{em_w * ratio:,.0f} pts · locked {lock['locked_at']:%I:%M %p}".replace(" 0", " ")
+                  + f" · live ±{atm['move_1sd'] * ratio:,.0f} left")
+    else:
+        em_sub = f"±{em_w * ratio:,.0f} pts 1σ · live (locks at 9:45 ET)"
     if atm["straddle"]:
         em_sub += f" · straddle ±{atm['straddle'] * ratio:,.0f}"
     iv_val, iv_sub = f"{atm['iv'] * 100:.1f}%", f"ATM, expiry {atm['expiry']}"
@@ -291,7 +337,7 @@ st.markdown("#### Price chart")
 pc1, pc2, pc3 = st.columns([1, 2.5, 1])
 candle_iv = pc1.segmented_control("Candles", ["1m", "5m", "15m"], default="5m", label_visibility="collapsed") or "5m"
 layers = pc2.segmented_control(
-    "Show", ["Gamma levels", "Expected move", "Daily EM"], selection_mode="multi",
+    "Show", ["Gamma levels", "Expected move", "Live EM", "Daily EM"], selection_mode="multi",
     default=["Gamma levels", "Expected move", "Daily EM"], label_visibility="collapsed",
 ) or []
 UNDERLYING_TICKER = {"QQQ": "QQQ", "_SPX": "^GSPC", "SPY": "SPY"}
@@ -336,8 +382,12 @@ else:
         if flip_main is not None:
             level(to_fut(flip_main), f"HVL {fmt(to_fut(flip_main))}", "#22b8cf", "solid", 2)
     if "Expected move" in layers and atm:
-        level(to_fut(spot + atm["move_1sd"]), f"EM ↑ {fmt(hi)}", "#a371f7", "dash")
-        level(to_fut(spot - atm["move_1sd"]), f"EM ↓ {fmt(lo)}", "#a371f7", "dash")
+        level(to_fut(em_c + em_w), f"EM ↑ {fmt(hi)}", "#a371f7", "dash")
+        level(to_fut(em_c - em_w), f"EM ↓ {fmt(lo)}", "#a371f7", "dash")
+    if "Live EM" in layers and atm and lock:
+        l_hi, l_lo = to_fut(spot + atm["move_1sd"]), to_fut(spot - atm["move_1sd"])
+        level(l_hi, f"live EM ↑ {fmt(l_hi)}", "#a371f7", "dot", 1, 0.6)
+        level(l_lo, f"live EM ↓ {fmt(l_lo)}", "#a371f7", "dot", 1, 0.6)
     if "Daily EM" in layers and dem:
         d_hi, d_lo = to_fut(dem["anchor"] + dem["move"]), to_fut(dem["anchor"] - dem["move"])
         level(d_hi, f"Daily EM ↑ {fmt(d_hi)}", "#ff9800", "dash", 2)
@@ -384,8 +434,8 @@ with left:
     hline(fig, spot, f"spot {fmt(f_spot)}", TH["spot"], "solid")
     hline(fig, flip_main, f"flip {fmt(to_fut(flip_main))}", "#d29922", "dash")
     if atm:
-        hline(fig, spot + atm["move_1sd"], f"EM ↑ {fmt(hi)}", "#58a6ff")
-        hline(fig, spot - atm["move_1sd"], f"EM ↓ {fmt(lo)}", "#58a6ff")
+        hline(fig, em_c + em_w, f"EM ↑ {fmt(hi)}", "#58a6ff")
+        hline(fig, em_c - em_w, f"EM ↓ {fmt(lo)}", "#58a6ff")
     style(fig, height=560, showlegend=False, bargap=0.15,
                       margin=dict(l=10, r=110, t=10, b=10), xaxis_title=xlab, dragmode="pan")
     fig.update_yaxes(tickformat=",.0f")
@@ -458,14 +508,81 @@ for i, (_, r) in enumerate(table[table[gcol] > 0.03 * max_abs].nlargest(7, gcol)
 for i, (_, r) in enumerate(table[table[gcol] < -0.03 * max_abs].nsmallest(5, gcol).iterrows(), 1):
     lv.append(f"P{i},{num(conv(r['strike']))},{r[gcol] / max_abs:.2f}")
 if atm:
-    lv.append(f"EM+,{num(conv(spot + atm['move_1sd']))}")
-    lv.append(f"EM-,{num(conv(spot - atm['move_1sd']))}")
+    lv.append(f"EM+,{num(conv(em_c + em_w))}")
+    lv.append(f"EM-,{num(conv(em_c - em_w))}")
 if dem:
     lv.append(f"DEM+,{num(conv(dem['anchor'] + dem['move']))}")
     lv.append(f"DEM-,{num(conv(dem['anchor'] - dem['move']))}")
 st.code(";".join(lv), language=None, wrap_lines=True)
 st.caption("Click the copy icon on the box, then paste it into the GEX Levels indicator's settings in TradingView. "
            "Levels follow the product, expiry window and weighting selected above. Re-copy whenever you want fresh levels.")
+
+# ---------------------------------------------------------------- saved 9:45 levels
+st.markdown("#### Saved 9:45 levels")
+days = snapshot_days()
+if not days:
+    st.caption("No saved days yet. The GitHub Action saves each weekday's levels at 9:45 ET.")
+else:
+    h1, h2 = st.columns([1, 3])
+    day = h1.selectbox("Day", days, label_visibility="collapsed",
+                       format_func=lambda d: datetime.strptime(d, "%Y-%m-%d").strftime("%a %b %d, %Y"))
+    snap = (load_snapshot(day) or {}).get(product)
+    if not snap:
+        h2.caption(f"Nothing saved for {product} on that day.")
+    else:
+        w = weight  # follows the sidebar: volume or open interest
+        s_fut = use_fut and snap.get("fut")
+        sconv = (lambda x: x * snap["ratio"] + snap["add"]) if s_fut else (lambda x: x)
+        lv_w = snap[w]
+        flip = lv_w.get("flip")
+        regime = "—"
+        if flip is not None:
+            pos_g, above = lv_w["net_gamma"] > 0, snap["spot"] > flip
+            regime = ("Positive" if pos_g else "Negative") if pos_g == above else "Mixed"
+        t_saved = datetime.fromisoformat(snap["time"])
+        h2.caption(
+            f"Saved {t_saved:%a %b %d, %I:%M %p} ET · expiry {snap['expiry']} · spot {snap['spot']:,.2f}"
+            + (f" · futures {snap['fut']:,.2f}" if snap.get("fut") else "")
+            + (f" · ATM IV {snap['atm_iv'] * 100:.1f}%" if snap.get("atm_iv") else "")
+            + f" · regime {regime} · {'volume' if w == 'volume' else 'OI'} weighting"
+        )
+
+        rows, tv = [], [f"ASOF,{cfg['chain'].strip('_')} 9:45 snapshot · {day}",
+                        f"TAG,9:45 ({t_saved:%m/%d})"]
+
+        def add_row(name, px, strength=None, color=TH["fg"]):
+            rows.append((name, px, strength, color))
+            tv.append(f"{name},{num(sconv(px))}" + (f",{strength:.2f}" if strength is not None else ""))
+
+        if flip is not None:
+            add_row("HVL", flip, color="#22b8cf")
+        for i, (k, st_) in enumerate(lv_w["calls"], 1):
+            add_row(f"C{i}", k, st_, GREEN)
+        for i, (k, st_) in enumerate(lv_w["puts"], 1):
+            add_row(f"P{i}", k, st_, RED)
+        if snap.get("em"):
+            e = snap["em"]
+            add_row("EM+", e["anchor"] + e["move"], color="#a371f7")
+            add_row("EM-", e["anchor"] - e["move"], color="#a371f7")
+        if snap.get("daily_em"):
+            d = snap["daily_em"]
+            add_row("DEM+", d["anchor"] + d["move"], color="#ff9800")
+            add_row("DEM-", d["anchor"] - d["move"], color="#ff9800")
+
+        label = {"EM+": "EM ↑", "EM-": "EM ↓", "DEM+": "Daily EM ↑", "DEM-": "Daily EM ↓"}
+        body = "".join(
+            f'<tr><td style="color:{c}">{label.get(n, n)}</td>'
+            f'<td class="num">{sconv(p):,.2f}</td>'
+            f'<td class="num dim">{p:,.2f}</td>'
+            f'<td class="num dim">{"" if s_ is None else f"{s_:+.2f}"}</td></tr>'
+            for n, p, s_, c in sorted(rows, key=lambda r: -r[1])
+        )
+        head = (f'<tr><td class="dim">Level</td><td class="num dim">{"Futures" if s_fut else "Price"}</td>'
+                f'<td class="num dim">{cfg["chain"].strip("_")}</td><td class="num dim">Strength</td></tr>')
+        st.markdown(f'<div class="kblock"><table class="ktable">{head}{body}</table></div>',
+                    unsafe_allow_html=True)
+        st.caption("TradingView string for this day (paste into GEX Levels to see these exact levels):")
+        st.code(";".join(tv), language=None, wrap_lines=True)
 
 st.markdown(
     '<div class="note">The dealer sign is assumed (dealers long calls, short puts), which real positioning often contradicts. '

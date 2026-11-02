@@ -41,9 +41,16 @@ def fetch_cboe_chain(symbol: str):
         df[col] = pd.to_numeric(df.get(col, 0), errors="coerce").fillna(0)
 
     df = df.dropna(subset=["expiry", "strike", "type"])
-    prev = data.get("prev_day_close")
-    prev = float(prev) if prev not in (None, "", 0) else None
-    return df, spot, payload.get("timestamp", ""), prev
+    def num(key):
+        v = data.get(key)
+        try:
+            v = float(v)
+            return v if v > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    extras = {"prev_close": num("prev_day_close"), "open": num("open")}
+    return df, spot, payload.get("timestamp", ""), extras
 
 
 def fetch_futures_price(ticker: str):
@@ -256,3 +263,72 @@ def clean_candles(h, k=6.0):
     h["High"] = np.maximum(np.minimum(h["High"], body_hi + tol), body_hi)
     h["Low"] = np.minimum(np.maximum(h["Low"], body_lo - tol), body_lo)
     return h
+
+
+SESSION_OPEN = time(9, 30)
+LOCK_AT = time(9, 45)
+
+
+def locked_expected_move(store, key, S, iv_now, open_px, expiry, now=None):
+    """Expected move fixed for the session: centred on today's open, sized for the time
+    from the open to expiry, using the ATM IV captured once after 9:45 ET.
+    Returns None outside the session (the app then shows the live EM)."""
+    now = now or datetime.now(ET)
+    if not (market_open(now) and now.time() >= LOCK_AT) or not iv_now:
+        return None
+    rec = store.get(key)
+    if rec is None:
+        rec = {"iv": float(iv_now), "anchor": float(open_px or S), "locked_at": now}
+        store[key] = rec
+    t_open = datetime.combine(now.date(), SESSION_OPEN, tzinfo=ET)
+    exp_dt = datetime.combine(expiry, time(16, 0), tzinfo=ET)
+    T = max((exp_dt - t_open).total_seconds(), 0) / YEAR_SECONDS
+    return {**rec, "move": rec["anchor"] * rec["iv"] * np.sqrt(T)}
+
+
+# ---------------------------------------------------------------- daily snapshots
+def conversion(spot, fut, mode):
+    """(ratio, add) to turn underlying prices into futures prices."""
+    if not fut:
+        return 1.0, 0.0
+    return (fut / spot, 0.0) if mode == "ratio" else (1.0, fut - spot)
+
+
+def build_snapshot(raw, spot, extras, fut, mode, now=None, n_calls=7, n_puts=5):
+    """All the levels for the nearest expiry, in underlying prices, as a JSON-friendly dict."""
+    now = now or datetime.now(ET)
+    df = prepare(raw, 0, now)
+    if df.empty:
+        return None
+    ratio, add = conversion(spot, fut, mode)
+    atm = atm_stats(df, spot)
+    dem = daily_expected_move(prepare(raw, None, now), spot, extras.get("prev_close"), now)
+    expiry = df["expiry"].min()
+
+    snap = {
+        "time": now.isoformat(timespec="seconds"),
+        "expiry": str(expiry),
+        "spot": spot, "fut": fut, "ratio": ratio, "add": add,
+        "atm_iv": atm["iv"] if atm else None,
+    }
+    if atm:
+        anchor = extras.get("open") or spot
+        t_open = datetime.combine(now.date(), SESSION_OPEN, tzinfo=ET)
+        T = max((datetime.combine(expiry, time(16, 0), tzinfo=ET) - t_open).total_seconds(), 0) / YEAR_SECONDS
+        snap["em"] = {"anchor": anchor, "iv": atm["iv"], "move": anchor * atm["iv"] * float(np.sqrt(T))}
+    if dem:
+        snap["daily_em"] = {"anchor": dem["anchor"], "move": dem["move"]}
+
+    table = strike_table(df, spot)
+    for w, col in [("volume", "gex_vol"), ("oi", "gex_oi")]:
+        grid, totals = gamma_profile(df, spot, w, pct=0.08)
+        mx = table[col].abs().max() or 1
+        pos = table[table[col] > 0.03 * mx].nlargest(n_calls, col)
+        neg = table[table[col] < -0.03 * mx].nsmallest(n_puts, col)
+        snap[w] = {
+            "flip": gamma_flip(grid, totals, spot),
+            "net_gamma": float(gex_per_option(df, spot, w).sum()),
+            "calls": [[float(k), round(float(v) / mx, 3)] for k, v in zip(pos["strike"], pos[col])],
+            "puts": [[float(k), round(float(v) / mx, 3)] for k, v in zip(neg["strike"], neg[col])],
+        }
+    return snap
