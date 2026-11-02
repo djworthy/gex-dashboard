@@ -13,6 +13,7 @@ st.set_page_config(page_title="Gamma map", page_icon="📈", layout="wide")
 PRODUCTS = {
     "NQ · QQQ": {"chain": "QQQ", "future": "NQ=F", "mode": "ratio"},
     "ES · SPX": {"chain": "_SPX", "future": "ES=F", "mode": "basis"},
+    "ES · SPY": {"chain": "SPY", "future": "ES=F", "mode": "ratio"},
 }
 WINDOWS = {"0DTE": 0, "1D": 1, "7D": 7, "31D": 31, "91D": 91, "All": None}
 
@@ -98,7 +99,7 @@ def load_future(ticker):
 
 
 # ---------------------------------------------------------------- controls
-c1, c2, c3 = st.columns([1.2, 2.2, 1])
+c1, c2, c3 = st.columns([1.6, 2.2, 1])
 product = c1.segmented_control("Product", list(PRODUCTS), default="NQ · QQQ", label_visibility="collapsed") or "NQ · QQQ"
 window = c2.segmented_control("Expiry window", list(WINDOWS), default="0DTE", label_visibility="collapsed") or "0DTE"
 if c3.button("Refresh data", width="stretch"):
@@ -293,7 +294,7 @@ layers = pc2.segmented_control(
     "Show", ["Gamma levels", "Expected move", "Daily EM"], selection_mode="multi",
     default=["Gamma levels", "Expected move", "Daily EM"], label_visibility="collapsed",
 ) or []
-UNDERLYING_TICKER = {"QQQ": "QQQ", "_SPX": "^GSPC"}
+UNDERLYING_TICKER = {"QQQ": "QQQ", "_SPX": "^GSPC", "SPY": "SPY"}
 chart_ticker = cfg["future"] if fut else UNDERLYING_TICKER[cfg["chain"]]
 pc3.segmented_control("Theme", ["Dark", "Light"], default="Dark", key="chart_theme",
                        label_visibility="collapsed")
@@ -436,7 +437,7 @@ st.plotly_chart(fig2, width="stretch", theme=None)
 # ---------------------------------------------------------------- TradingView export
 st.markdown("#### TradingView levels")
 tv_units = st.radio(
-    "Your TradingView chart is", ["Futures (NQ1! / ES1!)", "Underlying (QQQ / SPX)"],
+    "Your TradingView chart is", ["Futures (NQ1! / ES1!)", "Underlying (QQQ / SPX / SPY)"],
     horizontal=True,
 )
 use_fut = tv_units.startswith("Futures") and fut is not None
