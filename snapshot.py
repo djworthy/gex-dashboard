@@ -44,7 +44,7 @@ def main():
 
     if not day:
         print("Nothing saved (market holiday or data unavailable).")
-        return
+        sys.exit(1)  # make the run show a red X so problems are visible
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(day, indent=1, default=str))
     print(f"wrote {out}")
