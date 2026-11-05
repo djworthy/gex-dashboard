@@ -547,11 +547,10 @@ else:
             + f" · regime {regime} · {'volume' if w == 'volume' else 'OI'} weighting"
         )
 
-        rows, tv = [], [f"ASOF,{cfg['chain'].strip('_')} 9:45 snapshot · {day}",
+        tv = [f"ASOF,{cfg['chain'].strip('_')} 9:45 snapshot · {day}",
                         f"TAG,9:45 ({t_saved:%m/%d})"]
 
-        def add_row(name, px, strength=None, color=TH["fg"]):
-            rows.append((name, px, strength, color))
+        def add_row(name, px, strength=None, color=None):
             tv.append(f"{name},{num(sconv(px))}" + (f",{strength:.2f}" if strength is not None else ""))
 
         if flip is not None:
@@ -569,19 +568,7 @@ else:
             add_row("DEM+", d["anchor"] + d["move"], color="#ff9800")
             add_row("DEM-", d["anchor"] - d["move"], color="#ff9800")
 
-        label = {"EM+": "EM ↑", "EM-": "EM ↓", "DEM+": "Daily EM ↑", "DEM-": "Daily EM ↓"}
-        body = "".join(
-            f'<tr><td style="color:{c}">{label.get(n, n)}</td>'
-            f'<td class="num">{sconv(p):,.2f}</td>'
-            f'<td class="num dim">{p:,.2f}</td>'
-            f'<td class="num dim">{"" if s_ is None else f"{s_:+.2f}"}</td></tr>'
-            for n, p, s_, c in sorted(rows, key=lambda r: -r[1])
-        )
-        head = (f'<tr><td class="dim">Level</td><td class="num dim">{"Futures" if s_fut else "Price"}</td>'
-                f'<td class="num dim">{cfg["chain"].strip("_")}</td><td class="num dim">Strength</td></tr>')
-        st.markdown(f'<div class="kblock"><table class="ktable">{head}{body}</table></div>',
-                    unsafe_allow_html=True)
-        st.caption("TradingView string for this day (paste into GEX Levels to see these exact levels):")
+        st.caption("Paste into the GEX Levels indicator in TradingView to see that day's exact levels.")
         st.code(";".join(tv), language=None, wrap_lines=True)
 
 st.markdown(
