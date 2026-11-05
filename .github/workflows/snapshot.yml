@@ -2,8 +2,12 @@ name: Save 9:45 GEX levels
 
 on:
   schedule:
-    - cron: "45 13 * * 1-5"   # 9:45 ET while daylight saving time is in effect
-    - cron: "45 14 * * 1-5"   # 9:45 ET during standard time (the script skips the extra run)
+    # GitHub's scheduler can run late or skip runs, so try several times.
+    # The first run that gets through saves the file; later runs see it and stop.
+    # Times are UTC: 13:45-14:20 covers 9:45-10:20 ET in summer (EDT),
+    #                14:45-15:20 covers 9:45-10:20 ET in winter (EST).
+    - cron: "45,50,55 13,14 * * 1-5"
+    - cron: "0,10,20 14,15 * * 1-5"
   workflow_dispatch:           # adds a "Run workflow" button for testing
 
 permissions:
@@ -14,15 +18,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Already saved today?
+        id: check
+        run: |
+          f="snapshots/$(TZ=America/New_York date +%F).json"
+          if [ -f "$f" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "$f already exists, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-python@v5
+        if: steps.check.outputs.skip != 'true'
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+        if: steps.check.outputs.skip != 'true'
       - name: Save levels
+        if: steps.check.outputs.skip != 'true'
         run: python snapshot.py ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
       - name: Commit the new file
+        if: steps.check.outputs.skip != 'true'
         run: |
           git config user.name "gex-snapshot-bot"
           git config user.email "actions@users.noreply.github.com"
           git add snapshots
-          git diff --cached --quiet || (git commit -m "9:45 levels $(date +%F)" && git push)
+          git diff --cached --quiet || (git commit -m "9:45 levels $(TZ=America/New_York date +%F)" && git push)
