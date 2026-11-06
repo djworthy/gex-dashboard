@@ -18,6 +18,7 @@ LEVEL_STYLE = {  # name prefix -> (colour, dash, width)
     "UT1": (GREEN, "solid", 2), "UT2": (GREEN, "solid", 1), "FUT": (GREEN, "dot", 1),
     "DT1": (RED, "solid", 2), "DT2": (RED, "solid", 1), "FDT": (RED, "dot", 1),
     "PDH": (GRAY, "dot", 1), "PDL": (GRAY, "dot", 1), "PDC": (GRAY, "dash", 1),
+    "PVWAP": ("#a371f7", "dash", 2), "PMID": ("#79c0ff", "dashdot", 1),
     "ONH": (BLUE, "dot", 1), "ONL": (BLUE, "dot", 1), "GBX": (GRAY, "dashdot", 1),
 }
 

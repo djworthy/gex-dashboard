@@ -24,8 +24,13 @@ def sessions(h):
     """One row per trading day: overnight + RTH OHLC and the 9:29 lock price."""
     df = tag_sessions(h)
     rows = []
+    has_vol = "Volume" in df.columns
     for d, g in df.groupby("tday", sort=True):
         on, rth = g[g["on"]], g[g["rth"]]
+        vwap = np.nan
+        if has_vol and len(rth) and rth["Volume"].sum() > 0:
+            typical = (rth["High"] + rth["Low"] + rth["Close"]) / 3
+            vwap = float((typical * rth["Volume"]).sum() / rth["Volume"].sum())
         rows.append({
             "tday": d,
             "gbx": on["Open"].iloc[0] if len(on) else np.nan,
@@ -36,6 +41,7 @@ def sessions(h):
             "h": rth["High"].max() if len(rth) else np.nan,
             "l": rth["Low"].min() if len(rth) else np.nan,
             "c": rth["Close"].iloc[-1] if len(rth) else np.nan,
+            "vwap": vwap,
             "rth_bars": len(rth),
             "rth_last": rth.index[-1] if len(rth) else None,
         })
@@ -87,7 +93,10 @@ def build_map(h, now):
                            {"1": "median day low", "2": "big day low (75th pct)", "F": "extreme day low (90th pct)"}[k]))
     if prev is not None:
         d = pd.Timestamp(prev.name).strftime("%a %m/%d").upper()
-        levels += [("PDH", prev["h"], f"{d} high"), ("PDL", prev["l"], f"{d} low"), ("PDC", prev["c"], f"{d} close")]
+        levels += [("PDH", prev["h"], f"{d} high"), ("PDL", prev["l"], f"{d} low"), ("PDC", prev["c"], f"{d} close"),
+                   ("PMID", (prev["h"] + prev["l"]) / 2, f"{d} midpoint (high + low) ÷ 2")]
+        if not np.isnan(prev["vwap"]):
+            levels.append(("PVWAP", prev["vwap"], f"{d} VWAP at the 4:00 close"))
     if not np.isnan(cur["onh"]):
         levels += [("ONH", cur["onh"], "overnight high"), ("ONL", cur["onl"], "overnight low"),
                    ("GBX", cur["gbx"], "Globex open 18:00")]
