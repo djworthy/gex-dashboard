@@ -5,24 +5,31 @@ import numpy as np
 import pandas as pd
 
 RTH_OPEN, RTH_CLOSE, GLOBEX_OPEN = time(9, 30), time(16, 0), time(18, 0)
+PREMARKET_OPEN = time(4, 0)
+# kind: "futures" (overnight from 6 pm), "etf" (premarket from 4 am), "index" (regular hours only)
 PCTS = {"1": 50, "2": 75, "F": 90}  # UT1/DT1 = median day, UT2/DT2 = big day, FUT/FDT = extreme day
 
 
-def tag_sessions(h):
-    """Label every bar with its trading day (bars from 18:00 belong to the next day) and part."""
+def tag_sessions(h, kind="futures"):
+    """Label every bar with its trading day and part (rth / on = overnight or premarket)."""
     df = h.copy()
     idx = df.index
     t = pd.Series(idx.time, index=idx)
-    shift = pd.to_timedelta((idx.hour >= 18).astype(int), unit="D")
-    df["tday"] = (idx.normalize() + shift).date
     df["rth"] = ((t >= RTH_OPEN) & (t < RTH_CLOSE)).values
-    df["on"] = ((t >= GLOBEX_OPEN) | (t < RTH_OPEN)).values
+    if kind == "futures":  # bars from 18:00 belong to the next trading day
+        shift = pd.to_timedelta((idx.hour >= 18).astype(int), unit="D")
+        df["tday"] = (idx.normalize() + shift).date
+        df["on"] = ((t >= GLOBEX_OPEN) | (t < RTH_OPEN)).values
+    else:
+        df["tday"] = idx.normalize().date
+        df["on"] = (((t >= PREMARKET_OPEN) & (t < RTH_OPEN)).values if kind == "etf"
+                    else np.zeros(len(df), dtype=bool))
     return df
 
 
-def sessions(h):
-    """One row per trading day: overnight + RTH OHLC and the 9:29 lock price."""
-    df = tag_sessions(h)
+def sessions(h, kind="futures"):
+    """One row per trading day: overnight/premarket + RTH OHLC and the 9:29 lock price."""
+    df = tag_sessions(h, kind)
     rows = []
     has_vol = "Volume" in df.columns
 
@@ -36,12 +43,15 @@ def sessions(h):
         on, rth = g[g["on"]], g[g["rth"]]
         t = pd.Series(g.index.time, index=g.index)
         after_close = ((t >= RTH_CLOSE) & (t < GLOBEX_OPEN)).values  # 4:00-5:00 pm
+        lock = on["Close"].iloc[-1] if len(on) and on.index[-1].time() < RTH_OPEN else np.nan
+        if np.isnan(lock) and len(rth):  # no trading before the bell (index): use the 9:30 open
+            lock = rth["Open"].iloc[0]
         rows.append({
             "tday": d,
             "gbx": on["Open"].iloc[0] if len(on) else np.nan,
             "onh": on["High"].max() if len(on) else np.nan,
             "onl": on["Low"].min() if len(on) else np.nan,
-            "lock": on["Close"].iloc[-1] if len(on) and on.index[-1].time() < RTH_OPEN else np.nan,
+            "lock": lock,
             "o": rth["Open"].iloc[0] if len(rth) else np.nan,
             "h": rth["High"].max() if len(rth) else np.nan,
             "l": rth["Low"].min() if len(rth) else np.nan,
@@ -81,14 +91,25 @@ VWAP_MODES = {
 }
 
 
-def build_map(h, now, vwap_mode="1600"):
+def build_map(h, now, vwap_mode="1600", kind="futures"):
     """Everything the Day map page needs for the current trading day."""
-    sess = sessions(h)
-    st_ = stats(sess.iloc[:-1]) if len(sess) > 1 else None  # history excludes the current day
+    if kind != "futures":
+        vwap_mode = "rth"  # stocks/ETFs use the regular-hours session VWAP
+    sess = sessions(h, kind)
     cur_day = sess.index[-1]
     cur = sess.iloc[-1]
-    done = sess[(sess.index < cur_day) & (sess["rth_bars"] > 0)]
-    prev = done.iloc[-1] if len(done) else None
+    last_done = cur["rth_bars"] > 0 and cur["rth_last"] is not None and cur["rth_last"].time() >= time(15, 55)
+    evening = now.date() > cur_day or now.time() >= GLOBEX_OPEN
+    if kind != "futures" and last_done and evening:
+        # no evening session for stocks/ETFs/index: from 6 pm, preview the next session
+        hist, prev = sess, cur
+        cur_day = (pd.Timestamp(cur_day) + pd.offsets.BDay(1)).date()
+        cur = pd.Series({c: np.nan for c in sess.columns} | {"rth_bars": 0, "rth_last": None}, name=cur_day)
+    else:
+        hist = sess.iloc[:-1]  # history excludes the current day
+        done = hist[hist["rth_bars"] > 0]
+        prev = done.iloc[-1] if len(done) else None
+    st_ = stats(hist) if len(hist) else None
     last = float(h["Close"].iloc[-1])
 
     rth_started = cur["rth_bars"] > 0
@@ -113,8 +134,10 @@ def build_map(h, now, vwap_mode="1600"):
         if not np.isnan(prev[col]):
             levels.append(("PVWAP", prev[col], f"{d} {desc}"))
     if not np.isnan(cur["onh"]):
-        levels += [("ONH", cur["onh"], "overnight high"), ("ONL", cur["onl"], "overnight low"),
-                   ("GBX", cur["gbx"], "Globex open 18:00")]
+        part = "overnight" if kind == "futures" else "premarket"
+        levels += [("ONH", cur["onh"], f"{part} high"), ("ONL", cur["onl"], f"{part} low")]
+        if kind == "futures":
+            levels.append(("GBX", cur["gbx"], "Globex open 18:00"))
     if rth_started:
         levels += [("RTHH", cur["h"], "today's high so far" if not rth_done else "today's high"),
                    ("RTHL", cur["l"], "today's low so far" if not rth_done else "today's low")]
@@ -122,11 +145,11 @@ def build_map(h, now, vwap_mode="1600"):
     return {
         "day": cur_day, "last": last, "anchor": anchor, "locked": locked,
         "rth_started": rth_started, "rth_done": rth_done,
-        "cur": cur, "prev": prev, "stats": st_, "levels": levels,
+        "cur": cur, "prev": prev, "stats": st_, "levels": levels, "kind": kind,
     }
 
 
-def bluf(m, unit="pts"):
+def bluf(m, fmt=lambda x: f"{x:,.0f} pts"):
     """Two plain-English summary lines, like a trader's morning note."""
     cur, prev, last, st_ = m["cur"], m["prev"], m["last"], m["stats"]
     out = []
@@ -134,7 +157,8 @@ def bluf(m, unit="pts"):
         onr = cur["onh"] - cur["onl"]
         pos = (last - cur["onl"]) / onr if onr else 0.5
         third = "top third" if pos > 2 / 3 else "bottom third" if pos < 1 / 3 else "middle third"
-        line = f"Overnight ran {onr:,.0f} {unit} ({onr / last * 100:.2f}%)"
+        part = "Overnight" if m.get("kind", "futures") == "futures" else "Premarket"
+        line = f"{part} ran {fmt(onr)} ({onr / last * 100:.2f}%)"
         if st_ is not None and len(st_["on_ranges"]):
             pct = (st_["on_ranges"] < onr / last).mean() * 100
             line += (f", bigger than {pct:.0f}% of the last {st_['n']} sessions" if pct >= 50
@@ -158,5 +182,5 @@ def bluf(m, unit="pts"):
     if m["rth_started"] and st_:
         rng = cur["h"] - cur["l"]
         norm = st_["range_med"] * m["anchor"]
-        out.append(f"Day range so far {rng:,.0f} {unit}, {rng / norm * 100:.0f}% of a normal day ({norm:,.0f}).")
+        out.append(f"Day range so far {fmt(rng)}, {rng / norm * 100:.0f}% of a normal day ({fmt(norm)}).")
     return out

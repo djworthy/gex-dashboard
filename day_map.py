@@ -11,7 +11,13 @@ import gex
 import theme
 
 TH = theme.apply()
-FUTS = {"NQ": "NQ=F", "ES": "ES=F"}
+PRODUCTS = {  # ticker, kind, decimals, chart gaps to hide (hours)
+    "NQ": {"ticker": "NQ=F", "kind": "futures", "dp": 0, "gap": [17, 18]},
+    "ES": {"ticker": "ES=F", "kind": "futures", "dp": 0, "gap": [17, 18]},
+    "QQQ": {"ticker": "QQQ", "kind": "etf", "dp": 2, "gap": [20, 4]},
+    "SPY": {"ticker": "SPY", "kind": "etf", "dp": 2, "gap": [20, 4]},
+    "SPX": {"ticker": "^GSPC", "kind": "index", "dp": 0, "gap": [16, 9.5]},
+}
 GREEN, RED, GOLD, GRAY, BLUE = "#3fb950", "#f85149", "#d29922", "#8b949e", "#58a6ff"
 LEVEL_STYLE = {  # name prefix -> (colour, dash, width)
     "PIVOT": (GOLD, "dash", 2),
@@ -23,12 +29,12 @@ LEVEL_STYLE = {  # name prefix -> (colour, dash, width)
 }
 
 
-@st.cache_data(ttl=90, show_spinner="Loading futures bars…")
-def load_bars(ticker):
+@st.cache_data(ttl=90, show_spinner="Loading price bars…")
+def load_bars(ticker, prepost):
     try:
         import yfinance as yf
 
-        h = yf.Ticker(ticker).history(period="59d", interval="5m")
+        h = yf.Ticker(ticker).history(period="59d", interval="5m", prepost=prepost)
         if h is None or h.empty:
             return None
         h.index = h.index.tz_convert(gex.ET)
@@ -38,30 +44,42 @@ def load_bars(ticker):
 
 
 # ---------------------------------------------------------------- controls
+c1, c2, c3 = st.columns([1.6, 2.4, 1])
+sym = c1.segmented_control("Product", list(PRODUCTS), default="NQ", label_visibility="collapsed") or "NQ"
+P = PRODUCTS[sym]
+KIND, DP = P["kind"], P["dp"]
+pre_label = {"futures": "Overnight", "etf": "Premarket", "index": None}[KIND]
+
+
+def amt(x, signed=False):
+    """Move sizes: points for futures/SPX, dollars for QQQ/SPY."""
+    sign = ("+" if x >= 0 else "−") if signed else ""
+    return f"{sign}${abs(x):,.2f}" if KIND == "etf" else f"{sign}{abs(x):,.{DP}f} pts"
+
 with st.sidebar:
     vwap_choice = st.selectbox(
         "Prior day VWAP", ["From 6 pm, at 4:00 close", "From 6 pm, at 5:00 close", "Regular hours (9:30–4:00)"],
-        help="'From 6 pm' matches TradingView's standard session VWAP on NQ1! / ES1!.",
+        help="'From 6 pm' matches TradingView's standard session VWAP on NQ1! / ES1!. "
+             "QQQ and SPY always use the regular-hours VWAP; SPX has no volume, so no VWAP.",
+        disabled=KIND != "futures",
     )
 VWAP_MODE = {"From 6 pm, at 4:00 close": "1600", "From 6 pm, at 5:00 close": "1700",
              "Regular hours (9:30–4:00)": "rth"}[vwap_choice]
 
-c1, c2, c3 = st.columns([1, 2.4, 1])
-sym = c1.segmented_control("Futures", list(FUTS), default="NQ", label_visibility="collapsed") or "NQ"
 view = c2.segmented_control(
-    "View", ["Yesterday → today", "Overnight → today", "Last 2h"],
+    "View", ["Yesterday → today"] + ([f"{pre_label} → today"] if pre_label else []) + ["Last 2h"],
     default="Yesterday → today", label_visibility="collapsed",
 ) or "Yesterday → today"
 if c3.button("Refresh data", width="stretch"):
     load_bars.clear()
 
-h = load_bars(FUTS[sym])
-if h is None or len(h) < 500:
-    st.error("Couldn't load futures bars from Yahoo right now. Press Refresh data in a minute.")
+h = load_bars(P["ticker"], KIND == "etf")
+if h is None or len(h) < 300:
+    st.error(f"Couldn't load {sym} bars from Yahoo right now. Press Refresh data in a minute.")
     st.stop()
 
 now = datetime.now(gex.ET)
-m = daymap.build_map(h, now, VWAP_MODE)
+m = daymap.build_map(h, now, VWAP_MODE, KIND)
 st_ = m["stats"]
 day = pd.Timestamp(m["day"])
 status = ("SESSION CLOSED" if m["rth_done"] else "LIVE SESSION" if m["rth_started"]
@@ -74,10 +92,11 @@ st.markdown(
     f'color:{TH["muted"]};letter-spacing:.05em">{status}</span></div>',
     unsafe_allow_html=True,
 )
-st.caption(f"Yahoo 5-min bars (delayed) · last bar {h.index[-1]:%a %I:%M %p} ET")
+st.caption(f"Yahoo 5-min bars (delayed) · last bar {h.index[-1]:%a %I:%M %p} ET"
+           + (" · includes premarket and after-hours" if KIND == "etf" else ""))
 
 # ---------------------------------------------------------------- summary + cards
-lines = daymap.bluf(m)
+lines = daymap.bluf(m, fmt=amt)
 if lines:
     st.markdown(
         f'<div class="card" style="margin-bottom:14px"><div class="lbl" style="font-weight:700;'
@@ -106,23 +125,25 @@ if not np.isnan(cur["onh"]):
     where = ("above the overnight high" if pos > 1 else "below the overnight low" if pos < 0 else
              "now in the top third" if pos > 2 / 3 else "now in the bottom third" if pos < 1 / 3
              else "now in the middle third")
-    cards.append(card("Overnight", f"{onr:,.0f} pts", f"{onr / last * 100:.2f}% · {where}"))
+    where = where.replace("overnight", pre_label.lower())
+    cards.append(card(pre_label, amt(onr), f"{onr / last * 100:.2f}% · {where}"))
 cards.append(card(
-    "9:29 lock" if m["locked"] else "Pivot (provisional)", f"{m['anchor']:,.2f}",
-    "anchor for today's targets" if m["locked"] else "follows price until 9:29 ET, then locks",
+    ("9:30 open" if KIND == "index" else "9:29 lock") if m["locked"] else "Pivot (provisional)", f"{m['anchor']:,.2f}",
+    "anchor for today's targets" if m["locked"] else
+    ("locks at the 9:30 open" if KIND == "index" else "follows price until 9:29 ET, then locks"),
     GOLD,
 ))
 if st_:
     a = m["anchor"]
-    cards.append(card("A normal day", f"{st_['range_med'] * a:,.0f} pts",
-                      f"high usually +{st_['up']['lo'] * a:,.0f} to +{st_['up']['hi'] * a:,.0f} · "
-                      f"low usually −{st_['dn']['lo'] * a:,.0f} to −{st_['dn']['hi'] * a:,.0f}"))
+    cards.append(card("A normal day", amt(st_["range_med"] * a),
+                      f"high usually {amt(st_['up']['lo'] * a, True)} to {amt(st_['up']['hi'] * a, True)} · "
+                      f"low usually {amt(-st_['dn']['lo'] * a, True)} to {amt(-st_['dn']['hi'] * a, True)}"))
     cards.append(card("Based on", f"{st_['n']} sessions", "last ~60 days of regular-hours trading"))
 st.markdown('<div class="cards">' + "".join(cards) + "</div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- chart
-tagged = daymap.tag_sessions(h)
-if view == "Overnight → today":
+tagged = daymap.tag_sessions(h, KIND)
+if pre_label and view == f"{pre_label} → today":
     cd = h[tagged["tday"] == m["day"]]
 elif view == "Last 2h":
     cd = h[h.index >= h.index[-1] - timedelta(hours=2)]
@@ -163,8 +184,8 @@ for ts, text in [(pd.Timestamp(m["day"]).tz_localize(gex.ET) + timedelta(hours=9
 pad = (y_hi - y_lo) * 0.05 or 1
 theme.style(fig, TH, height=620, showlegend=False, dragmode="pan", xaxis_rangeslider_visible=False,
             margin=dict(l=10, r=150, t=20, b=10))
-fig.update_xaxes(rangebreaks=[dict(bounds=[17, 18], pattern="hour"), dict(bounds=["sat", "sun"])])
-fig.update_yaxes(range=[y_lo - pad, y_hi + pad], tickformat=",.0f")
+fig.update_xaxes(rangebreaks=[dict(bounds=P["gap"], pattern="hour"), dict(bounds=["sat", "mon"] if KIND != "futures" else ["sat", "sun"])])
+fig.update_yaxes(range=[y_lo - pad, y_hi + pad], tickformat=f",.{DP}f")
 st.plotly_chart(fig, width="stretch", config={"scrollZoom": True}, theme=None)
 if st_:
     st.caption("Shaded zones: where the day's high (green) and low (red) usually land, the middle half of the last "
@@ -189,8 +210,8 @@ tv = [f"ASOF,{sym} day map · {day:%Y-%m-%d}"] + [
     f"{n},{px:.2f}" for n, px, _ in m["levels"] if n in LEVEL_STYLE
 ]
 st.code(";".join(tv), language=None, wrap_lines=True)
-st.caption("Paste into the GEX Levels indicator's **Day map levels** box (separate from the GEX levels box, "
-           "so both can show at once). Levels are in futures prices for NQ1! / ES1!.")
+st.caption(f"Paste into the Day Map indicator's **Day map levels** box on a **{sym}** chart "
+           + ("(NQ1! / ES1!)." if KIND == "futures" else "(SPX on TradingView is SP:SPX)." if KIND == "index" else "."))
 
 st.markdown(
     '<div class="note">UT/DT targets are statistics from recent history: UT1/DT1 = a median day, UT2/DT2 = a big day '
