@@ -38,6 +38,14 @@ def load_bars(ticker):
 
 
 # ---------------------------------------------------------------- controls
+with st.sidebar:
+    vwap_choice = st.selectbox(
+        "Prior day VWAP", ["From 6 pm, at 4:00 close", "From 6 pm, at 5:00 close", "Regular hours (9:30–4:00)"],
+        help="'From 6 pm' matches TradingView's standard session VWAP on NQ1! / ES1!.",
+    )
+VWAP_MODE = {"From 6 pm, at 4:00 close": "1600", "From 6 pm, at 5:00 close": "1700",
+             "Regular hours (9:30–4:00)": "rth"}[vwap_choice]
+
 c1, c2, c3 = st.columns([1, 2.4, 1])
 sym = c1.segmented_control("Futures", list(FUTS), default="NQ", label_visibility="collapsed") or "NQ"
 view = c2.segmented_control(
@@ -53,7 +61,7 @@ if h is None or len(h) < 500:
     st.stop()
 
 now = datetime.now(gex.ET)
-m = daymap.build_map(h, now)
+m = daymap.build_map(h, now, VWAP_MODE)
 st_ = m["stats"]
 day = pd.Timestamp(m["day"])
 status = ("SESSION CLOSED" if m["rth_done"] else "LIVE SESSION" if m["rth_started"]

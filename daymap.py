@@ -25,12 +25,17 @@ def sessions(h):
     df = tag_sessions(h)
     rows = []
     has_vol = "Volume" in df.columns
+
+    def vwap(frame):
+        if not has_vol or frame.empty or frame["Volume"].sum() <= 0:
+            return np.nan
+        typical = (frame["High"] + frame["Low"] + frame["Close"]) / 3
+        return float((typical * frame["Volume"]).sum() / frame["Volume"].sum())
+
     for d, g in df.groupby("tday", sort=True):
         on, rth = g[g["on"]], g[g["rth"]]
-        vwap = np.nan
-        if has_vol and len(rth) and rth["Volume"].sum() > 0:
-            typical = (rth["High"] + rth["Low"] + rth["Close"]) / 3
-            vwap = float((typical * rth["Volume"]).sum() / rth["Volume"].sum())
+        t = pd.Series(g.index.time, index=g.index)
+        after_close = ((t >= RTH_CLOSE) & (t < GLOBEX_OPEN)).values  # 4:00-5:00 pm
         rows.append({
             "tday": d,
             "gbx": on["Open"].iloc[0] if len(on) else np.nan,
@@ -41,7 +46,9 @@ def sessions(h):
             "h": rth["High"].max() if len(rth) else np.nan,
             "l": rth["Low"].min() if len(rth) else np.nan,
             "c": rth["Close"].iloc[-1] if len(rth) else np.nan,
-            "vwap": vwap,
+            "vwap_1600": vwap(g[~after_close]),  # anchored 6:00 pm, read at the 4:00 pm close
+            "vwap_1700": vwap(g),                # anchored 6:00 pm, read at the 5:00 pm session end
+            "vwap_rth": vwap(rth),               # regular hours only, 9:30-4:00
             "rth_bars": len(rth),
             "rth_last": rth.index[-1] if len(rth) else None,
         })
@@ -67,7 +74,14 @@ def stats(sess, min_bars=60):
     }
 
 
-def build_map(h, now):
+VWAP_MODES = {
+    "1600": ("vwap_1600", "VWAP from 6:00 pm, at the 4:00 close"),
+    "1700": ("vwap_1700", "VWAP from 6:00 pm, at the 5:00 session end"),
+    "rth": ("vwap_rth", "regular-hours VWAP (9:30-4:00)"),
+}
+
+
+def build_map(h, now, vwap_mode="1600"):
     """Everything the Day map page needs for the current trading day."""
     sess = sessions(h)
     st_ = stats(sess.iloc[:-1]) if len(sess) > 1 else None  # history excludes the current day
@@ -95,8 +109,9 @@ def build_map(h, now):
         d = pd.Timestamp(prev.name).strftime("%a %m/%d").upper()
         levels += [("PDH", prev["h"], f"{d} high"), ("PDL", prev["l"], f"{d} low"), ("PDC", prev["c"], f"{d} close"),
                    ("PMID", (prev["h"] + prev["l"]) / 2, f"{d} midpoint (high + low) ÷ 2")]
-        if not np.isnan(prev["vwap"]):
-            levels.append(("PVWAP", prev["vwap"], f"{d} VWAP at the 4:00 close"))
+        col, desc = VWAP_MODES[vwap_mode]
+        if not np.isnan(prev[col]):
+            levels.append(("PVWAP", prev[col], f"{d} {desc}"))
     if not np.isnan(cur["onh"]):
         levels += [("ONH", cur["onh"], "overnight high"), ("ONL", cur["onl"], "overnight low"),
                    ("GBX", cur["gbx"], "Globex open 18:00")]
